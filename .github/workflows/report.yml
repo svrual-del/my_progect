@@ -1,9 +1,10 @@
 name: Kaspi Daily Report
 
 on:
-  # Каждый день в 04:00 UTC = 09:00 Алматы (UTC+5)
+  # Каждый день в 03:00 UTC = 08:00 Алматы (UTC+5)
+  # GitHub Actions имеет задержку до 30-60 мин, поэтому реально придёт ближе к 9:00
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 3 * * *'
   # Ручной запуск из интерфейса GitHub
   workflow_dispatch:
 

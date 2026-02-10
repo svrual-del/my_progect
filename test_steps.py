@@ -312,13 +312,41 @@ async def send_telegram(message, parse_mode=None):
         return False
 
 
+async def send_telegram_file(file_path, caption=""):
+    """Отправка файла в Telegram"""
+    print(f"  Telegram файл: {file_path}")
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            with open(file_path, 'rb') as f:
+                data = aiohttp.FormData()
+                data.add_field('chat_id', TELEGRAM_CHAT_ID)
+                data.add_field('document', f, filename=os.path.basename(file_path))
+                if caption:
+                    data.add_field('caption', caption)
+
+                async with session.post(url, data=data) as resp:
+                    result = await resp.json()
+                    if result.get("ok"):
+                        print(f"  [OK] Файл отправлен: {os.path.basename(file_path)}")
+                        return True
+                    else:
+                        print(f"  [FAIL] Telegram API ошибка: {result}")
+                        return False
+    except Exception as e:
+        print(f"  [FAIL] ОШИБКА отправки файла: {e}")
+        return False
+
+
 async def process_category(page, category_key, step_label):
-    """Обработка одной категории: скачивание и анализ. Возвращает stats или None."""
+    """Обработка одной категории: скачивание и анализ. Возвращает (stats, file_path) или (None, None)."""
     # Скачивание Excel
     file_path = await navigate_and_download(page, category_key, step_label)
     if not file_path:
         print(f"\n[STOP] Не удалось скачать Excel для '{step_label}'")
-        return None
+        return None, None
 
     await asyncio.sleep(2)
 
@@ -326,9 +354,9 @@ async def process_category(page, category_key, step_label):
     stats = await test_step3_parse_excel(file_path)
     if not stats:
         print(f"\n[STOP] Не удалось обработать Excel для '{step_label}'")
-        return None
+        return None, file_path
 
-    return stats
+    return stats, file_path
 
 
 def build_report_message(results):
@@ -394,11 +422,13 @@ async def main():
         ("отклонены", "Отклонены"),
     ]
 
-    # Собираем статистику по всем категориям
+    # Собираем статистику и пути к файлам по всем категориям
     results = {}
+    files = {}
     for category_key, step_label in categories:
-        stats = await process_category(page, category_key, step_label)
+        stats, file_path = await process_category(page, category_key, step_label)
         results[category_key] = stats
+        files[category_key] = file_path
         await asyncio.sleep(2)
 
     # Формируем и отправляем сводный отчёт
@@ -408,6 +438,17 @@ async def main():
 
     message = build_report_message(results)
     await send_telegram(message, parse_mode="HTML")
+
+    # Отправляем Excel-файлы
+    print("\n" + "="*50)
+    print("ОТПРАВКА EXCEL-ФАЙЛОВ В TELEGRAM")
+    print("="*50)
+
+    for category_key, step_label in categories:
+        file_path = files.get(category_key)
+        if file_path and os.path.exists(file_path):
+            await send_telegram_file(file_path, caption=step_label)
+            await asyncio.sleep(1)
 
     print("\n" + "="*50)
     print("ВСЕ КАТЕГОРИИ ОБРАБОТАНЫ!")
