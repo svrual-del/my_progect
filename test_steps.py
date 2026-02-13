@@ -108,9 +108,13 @@ async def switch_merchant(page, merchant_id, merchant_name):
     print("="*50)
 
     try:
+        # Сначала переходим на базовую страницу (чтобы обновить состояние)
+        await page.goto("https://kaspi.kz/mc/#/products/pending", timeout=60000)
+        await asyncio.sleep(3)
+
         # Ищем кнопку переключения мерчанта в header
         # На скрине это элемент "ID - 30409770" с иконкой стрелки вниз
-        # Ищем в верхней части страницы (y < 80)
+        # Ищем в верхней части страницы (y < 80, x > 800 — справа)
 
         dropdown_button = None
         all_elements = await page.query_selector_all('*')
@@ -118,13 +122,12 @@ async def switch_merchant(page, merchant_id, merchant_name):
         for elem in all_elements:
             try:
                 box = await elem.bounding_box()
-                if not box or box['y'] > 80 or box['x'] < 800:  # Справа вверху
+                if not box or box['y'] > 80 or box['x'] < 800:
                     continue
 
                 text = await elem.inner_text()
                 # Ищем элемент с текстом "ID - " (текущий мерчант)
                 if text and "ID -" in text and len(text) < 50:
-                    # Это наш переключатель
                     dropdown_button = elem
                     current_text = text.strip()
                     print(f"[1] Найден переключатель: '{current_text}'")
@@ -149,38 +152,82 @@ async def switch_merchant(page, merchant_id, merchant_name):
         # Ищем нужный вариант в выпадающем списке
         target_text = f"ID - {merchant_id}"
 
-        # Ищем элемент списка с нужным текстом
+        print(f"    Ищем вариант: '{target_text}'")
+
+        # Ищем элемент списка с ТОЧНЫМ текстом (не контейнер со всеми опциями)
         options = await page.query_selector_all('div, li, a, span')
         target_option = None
+        best_match = None
+        best_match_len = 1000  # Ищем элемент с самым коротким текстом (самый точный)
 
         for opt in options:
             try:
                 text = await opt.inner_text()
-                if text and target_text in text and len(text) < 50:
-                    box = await opt.bounding_box()
-                    # Элемент должен быть видимым (высота > 0) и в разумных координатах
-                    if box and box['height'] > 10 and box['y'] > 50 and box['y'] < 300:
-                        target_option = opt
-                        print(f"    Найден вариант: '{text.strip()}'")
-                        break
+                if not text:
+                    continue
+                text_clean = text.strip()
+
+                # Должен содержать наш ID
+                if target_text not in text_clean:
+                    continue
+
+                box = await opt.bounding_box()
+                # Элемент должен быть видимым и в выпадающем списке
+                if not box or box['height'] < 10 or box['y'] < 50 or box['y'] > 400:
+                    continue
+
+                # Предпочитаем элемент с самым коротким текстом (точное совпадение)
+                # чтобы не кликать по контейнеру со всеми опциями
+                if len(text_clean) < best_match_len:
+                    best_match = opt
+                    best_match_len = len(text_clean)
+                    print(f"    Кандидат: '{text_clean}' (len={len(text_clean)}, y={box['y']:.0f})")
             except:
                 continue
 
+        target_option = best_match
+
         if target_option:
             await target_option.click()
-            await asyncio.sleep(5)
-            print(f"[3] Переключаемся на {merchant_name}...")
+            print(f"[3] Клик по {merchant_name}...")
 
-            # Ждём перезагрузку страницы
+            # Ждём перезагрузку — дольше чтобы данные обновились
+            await asyncio.sleep(7)
+
+            # Принудительно ждём networkidle
             try:
                 await page.wait_for_load_state('networkidle', timeout=15000)
             except:
                 pass
 
+            # Проверяем что переключение успешно
+            await asyncio.sleep(2)
+
+            # Повторно проверяем текущего мерчанта
+            all_elements = await page.query_selector_all('*')
+            for elem in all_elements:
+                try:
+                    box = await elem.bounding_box()
+                    if not box or box['y'] > 80 or box['x'] < 800:
+                        continue
+                    text = await elem.inner_text()
+                    if text and "ID -" in text and len(text) < 50:
+                        print(f"[4] Текущий мерчант: '{text.strip()}'")
+                        if f"ID - {merchant_id}" in text:
+                            print(f"[OK] Успешно переключились на {merchant_name}")
+                            return True
+                        else:
+                            print(f"[!] Переключение не сработало! Остались на другом мерчанте")
+                            return False
+                except:
+                    continue
+
             print(f"    Текущий URL: {page.url}")
             return True
         else:
-            print(f"[!] Вариант '{target_text}' не найден")
+            print(f"[!] Вариант '{target_text}' не найден в списке")
+            # Закрываем список кликом в сторону
+            await page.keyboard.press('Escape')
             return False
 
     except Exception as e:
@@ -476,7 +523,6 @@ async def process_category(page, category_key, step_label, merchant_name=""):
     if not file_path:
         # Возвращаем статистику с 0 если скачивание пропущено (0 товаров)
         return {"total": 0, "count_30000": 0}, None
-        return None, None
 
     await asyncio.sleep(2)
 
@@ -490,55 +536,72 @@ async def process_category(page, category_key, step_label, merchant_name=""):
 
 
 def build_report_message(all_results):
-    """Формирует сводное сообщение-таблицу для Telegram с несколькими мерчантами"""
+    """Формирует сводное сообщение-таблицу для Telegram — одна таблица с колонкой Кабинет"""
     today = datetime.now().strftime("%d.%m.%Y")
 
-    # Короткие названия для таблицы
-    labels = [
-        ("Без привязки", "без_привязки"),
-        ("Треб.доработок", "требуют_доработок"),
-        ("На проверке", "на_проверке"),
-        ("Отклонены", "отклонены"),
+    # Категории (ключ -> короткое название для заголовка)
+    categories = [
+        ("без_привязки", "Без прив."),
+        ("требуют_доработок", "Треб.дор."),
+        ("на_проверке", "На пров."),
+        ("отклонены", "Отклон."),
     ]
 
     lines = []
     lines.append(f"Kaspi Report | {today}")
-    lines.append("=" * 45)
+    lines.append("=" * 58)
 
-    grand_total = 0
-    grand_30000 = 0
+    # Заголовок таблицы: Кабинет | Без прив. | Треб.дор. | На пров. | Отклон.
+    header = f"{'Кабинет':<10}"
+    for _, short_name in categories:
+        header += f"|{short_name:^10}"
+    lines.append(header)
+    lines.append("-" * 58)
 
-    # Для каждого мерчанта
+    # Итоги для подсчёта общего
+    totals = {key: {"total": 0, "count_30000": 0} for key, _ in categories}
+
+    # Строки данных по мерчантам
     for merchant_name, results in all_results.items():
-        lines.append(f"\n{merchant_name}")
-        lines.append("-" * 34)
-        lines.append(f"{'Категория':<17}|{'Всего':>7}|{'30000':>7}")
-        lines.append("-" * 34)
-
-        sum_total = 0
-        sum_30000 = 0
-
-        for label, key in labels:
-            stats = results.get(key)
+        row = f"{merchant_name:<10}"
+        for cat_key, _ in categories:
+            stats = results.get(cat_key)
             if stats:
                 t = stats["total"]
                 c = stats["count_30000"]
             else:
                 t = 0
                 c = 0
-            sum_total += t
-            sum_30000 += c
-            lines.append(f"{label:<17}|{t:>7}|{c:>7}")
+            # Формат: "32 (25)" — всего (из них 30000)
+            if t > 0:
+                cell = f"{t} ({c})"
+            else:
+                cell = "0"
+            row += f"|{cell:^10}"
+            totals[cat_key]["total"] += t
+            totals[cat_key]["count_30000"] += c
+        lines.append(row)
 
-        lines.append("-" * 34)
-        lines.append(f"{'Итого ' + merchant_name:<17}|{sum_total:>7}|{sum_30000:>7}")
+    # Итоговая строка
+    lines.append("-" * 58)
+    row_total = f"{'ИТОГО':<10}"
+    grand_total = 0
+    grand_30000 = 0
+    for cat_key, _ in categories:
+        t = totals[cat_key]["total"]
+        c = totals[cat_key]["count_30000"]
+        grand_total += t
+        grand_30000 += c
+        if t > 0:
+            cell = f"{t} ({c})"
+        else:
+            cell = "0"
+        row_total += f"|{cell:^10}"
+    lines.append(row_total)
 
-        grand_total += sum_total
-        grand_30000 += sum_30000
-
-    # Общий итог
-    lines.append("\n" + "=" * 45)
-    lines.append(f"{'ВСЕГО':<17}|{grand_total:>7}|{grand_30000:>7}")
+    # Общая сумма всех товаров
+    lines.append("=" * 58)
+    lines.append(f"Всего товаров: {grand_total} (на 30000: {grand_30000})")
 
     table = "\n".join(lines)
 
@@ -553,11 +616,10 @@ async def process_merchant(page, merchant, categories):
     merchant_id = merchant["id"]
     merchant_name = merchant["name"]
 
-    # Переключаемся на мерчанта (для первого это необязательно, он по умолчанию)
-    if MERCHANTS.index(merchant) > 0:
-        switched = await switch_merchant(page, merchant_id, merchant_name)
-        if not switched:
-            print(f"[WARN] Не удалось переключиться на {merchant_name}, пробуем продолжить...")
+    # Всегда переключаемся на нужного мерчанта (даже для первого, т.к. браузер может помнить предыдущего)
+    switched = await switch_merchant(page, merchant_id, merchant_name)
+    if not switched:
+        print(f"[WARN] Не удалось переключиться на {merchant_name}, пробуем продолжить...")
 
     # Переходим на страницу нераспознанных товаров
     await page.goto(CATEGORY_URLS["без_привязки"], timeout=60000)
