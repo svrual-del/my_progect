@@ -26,6 +26,9 @@ jobs:
           playwright install chromium
           playwright install-deps
 
+      - name: Create Google credentials file
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > google-credentials.json
+
       - name: Run Kaspi Reporter
         env:
           CI: 'true'
