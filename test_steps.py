@@ -286,8 +286,8 @@ async def test_step3_parse_excel(file_path):
 
 
 async def send_telegram(message, parse_mode=None):
-    """Отправка сообщения в Telegram"""
-    print(f"  Telegram: {message}")
+    """Отправка сообщения в Telegram. Возвращает message_id или None"""
+    print(f"  Telegram: {message[:100]}...")
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -302,13 +302,40 @@ async def send_telegram(message, parse_mode=None):
             async with session.post(url, json=payload) as resp:
                 result = await resp.json()
                 if result.get("ok"):
-                    print("  [OK] Отправлено в Telegram!")
-                    return True
+                    message_id = result["result"]["message_id"]
+                    print(f"  [OK] Отправлено в Telegram! (message_id: {message_id})")
+                    return message_id
                 else:
                     print(f"  [FAIL] Telegram API ошибка: {result}")
-                    return False
+                    return None
     except Exception as e:
         print(f"  [FAIL] ОШИБКА отправки: {e}")
+        return None
+
+
+async def pin_telegram_message(message_id):
+    """Закрепление сообщения в чате. Бот должен быть администратором с правом закреплять."""
+    print(f"  Закрепление сообщения {message_id}...")
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/pinChatMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "message_id": message_id,
+        "disable_notification": True  # Без уведомления о закреплении
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                result = await resp.json()
+                if result.get("ok"):
+                    print("  [OK] Сообщение закреплено!")
+                    return True
+                else:
+                    print(f"  [WARN] Не удалось закрепить: {result}")
+                    return False
+    except Exception as e:
+        print(f"  [WARN] ОШИБКА закрепления: {e}")
         return False
 
 
@@ -441,7 +468,11 @@ async def main():
     print("="*50)
 
     message = build_report_message(results)
-    await send_telegram(message, parse_mode="HTML")
+    message_id = await send_telegram(message, parse_mode="HTML")
+
+    # Закрепляем сообщение в группе (бот должен быть админом)
+    if message_id:
+        await pin_telegram_message(message_id)
 
     # Отправляем Excel-файлы
     print("\n" + "="*50)

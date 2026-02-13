@@ -21,7 +21,7 @@ CATEGORY_URLS = {
 
 # Telegram настройки (из переменных окружения или значения по умолчанию)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8510234232:AAHRcMRMP87na4Ci9GjvIb8Sp9Bz_bkzE7Q")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "577173214")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1002158563605")
 
 # Настройки браузера
 # В CI/облаке автоматически headless, локально — с окном
