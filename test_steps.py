@@ -220,6 +220,19 @@ async def navigate_and_download(page, category_key, step_label="", merchant_name
         # Ищем вкладку по тексту (текст содержит число в скобках, напр. "Требуют доработок (2)")
         tab = await page.query_selector(f'a:has-text("{tab_text}"):visible')
         if tab:
+            # Проверяем количество товаров в скобках
+            tab_full_text = await tab.inner_text()
+            print(f"    Вкладка: '{tab_full_text.strip()}'")
+
+            # Извлекаем число из скобок, напр. "Без привязки (0)" -> 0
+            import re
+            count_match = re.search(r'\((\d+)\)', tab_full_text)
+            if count_match:
+                count = int(count_match.group(1))
+                if count == 0:
+                    print(f"    [SKIP] Товаров 0 — пропускаем скачивание")
+                    return None
+
             await tab.click()
             await asyncio.sleep(5)
             print(f"    Текущий URL: {page.url}")
@@ -458,10 +471,11 @@ async def send_telegram_file(file_path, caption=""):
 
 async def process_category(page, category_key, step_label, merchant_name=""):
     """Обработка одной категории: скачивание и анализ. Возвращает (stats, file_path) или (None, None)."""
-    # Скачивание Excel
+    # Скачивание Excel (возвращает None если товаров 0)
     file_path = await navigate_and_download(page, category_key, step_label, merchant_name)
     if not file_path:
-        print(f"\n[STOP] Не удалось скачать Excel для '{step_label}'")
+        # Возвращаем статистику с 0 если скачивание пропущено (0 товаров)
+        return {"total": 0, "count_30000": 0}, None
         return None, None
 
     await asyncio.sleep(2)
