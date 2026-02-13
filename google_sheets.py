@@ -30,7 +30,7 @@ COLOR_GREEN = {"red": 0.8, "green": 1.0, "blue": 0.8}    # Зелёный фон
 COLOR_WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}    # Белый (обычный)
 
 # Структура столбцов (добавлен столбец "Кабинет" первым)
-COLUMNS = ["Кабинет", "Артикул", "Название товара", "Дата добавления", "Менеджер", "Отметка менеджера", "Дата исчезновения"]
+COLUMNS = ["Кабинет", "Артикул", "Название товара", "Дата добавления", "Менеджер", "Отметка менеджера", "Дата исчезновения", "Дней до решения"]
 
 
 def get_sheet():
@@ -74,7 +74,7 @@ def get_or_create_month_sheet(spreadsheet, month_name=None):
         sheet = spreadsheet.add_worksheet(title=month_name, rows=1000, cols=10)
         sheet.append_row(COLUMNS)
         # Форматируем заголовок (жирный)
-        sheet.format("A1:G1", {"textFormat": {"bold": True}})
+        sheet.format("A1:H1", {"textFormat": {"bold": True}})
         print(f"  [OK] Создан новый лист: {month_name}")
 
     return sheet
@@ -216,7 +216,7 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
         for i, color in enumerate(row_colors):
             row_num = start_row + i
             if color != COLOR_WHITE:
-                sheet.format(f"A{row_num}:G{row_num}", {"backgroundColor": color})
+                sheet.format(f"A{row_num}:H{row_num}", {"backgroundColor": color})
 
         print(f"  [OK] Цвета применены")
 
@@ -259,6 +259,169 @@ def check_disappeared_products(sheet, current_skus, merchant_name="Sulpak"):
         print(f"  [OK] Отмечено исчезнувших ({merchant_name}): {updated_count}")
 
     return updated_count
+
+
+def setup_days_column(sheet):
+    """
+    Настройка столбца H (Дней до решения):
+    - Формула: Дата исчезновения - Отметка менеджера
+    - Если отметка есть, а исчезновения нет — показываем "ОБМАН"
+    - Цвета: красный (отрицательное, >2, или ОБМАН), зелёный (0-2)
+    """
+    all_data = sheet.get_all_values()
+    if len(all_data) <= 1:
+        return  # Только заголовок
+
+    # Проверяем, есть ли столбец H
+    headers = all_data[0]
+    if len(headers) < 8 or headers[7] != "Дней до решения":
+        # Добавляем заголовок
+        sheet.update_cell(1, 8, "Дней до решения")
+        sheet.format("H1", {"textFormat": {"bold": True}})
+
+    # Обновляем формулы для всех строк
+    updates = []
+    for i in range(2, len(all_data) + 1):
+        # Формула:
+        # - Если F (отметка) заполнена, а G (исчезновение) пустая — "ОБМАН"
+        # - Если оба заполнены — разница G-F
+        # - Иначе — пусто
+        # F = Отметка менеджера, G = Дата исчезновения
+        formula = f'=ЕСЛИ(И(F{i}<>"";G{i}="");"ОБМАН";ЕСЛИ(И(F{i}<>"";G{i}<>"");G{i}-F{i};""))'
+        updates.append({"range": f"H{i}", "values": [[formula]]})
+
+    if updates:
+        # Пакетное обновление формул
+        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+
+    # Применяем условное форматирование для столбца H
+    # Используем Data Validation для столбца F (только дата)
+    try:
+        spreadsheet = sheet.spreadsheet
+
+        # Условное форматирование через API
+        requests = [
+            # Красный для текста "ОБМАН" (отметка есть, исчезновения нет)
+            {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet.id,
+                            "startColumnIndex": 7,  # H = индекс 7
+                            "endColumnIndex": 8,
+                            "startRowIndex": 1
+                        }],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "TEXT_EQ",
+                                "values": [{"userEnteredValue": "ОБМАН"}]
+                            },
+                            "format": {
+                                "backgroundColor": {"red": 1.0, "green": 0.6, "blue": 0.6},
+                                "textFormat": {"bold": True}
+                            }
+                        }
+                    },
+                    "index": 0
+                }
+            },
+            # Красный для отрицательных значений (H < 0)
+            {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet.id,
+                            "startColumnIndex": 7,
+                            "endColumnIndex": 8,
+                            "startRowIndex": 1
+                        }],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "NUMBER_LESS",
+                                "values": [{"userEnteredValue": "0"}]
+                            },
+                            "format": {
+                                "backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}
+                            }
+                        }
+                    },
+                    "index": 1
+                }
+            },
+            # Красный для значений > 2
+            {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet.id,
+                            "startColumnIndex": 7,
+                            "endColumnIndex": 8,
+                            "startRowIndex": 1
+                        }],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "NUMBER_GREATER",
+                                "values": [{"userEnteredValue": "2"}]
+                            },
+                            "format": {
+                                "backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}
+                            }
+                        }
+                    },
+                    "index": 2
+                }
+            },
+            # Зелёный для значений 0-2
+            {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet.id,
+                            "startColumnIndex": 7,
+                            "endColumnIndex": 8,
+                            "startRowIndex": 1
+                        }],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "NUMBER_BETWEEN",
+                                "values": [
+                                    {"userEnteredValue": "0"},
+                                    {"userEnteredValue": "2"}
+                                ]
+                            },
+                            "format": {
+                                "backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}
+                            }
+                        }
+                    },
+                    "index": 3
+                }
+            },
+            # Data Validation для столбца F (Отметка менеджера) — только дата
+            {
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": sheet.id,
+                        "startColumnIndex": 5,  # F = индекс 5
+                        "endColumnIndex": 6,
+                        "startRowIndex": 1
+                    },
+                    "rule": {
+                        "condition": {
+                            "type": "DATE_IS_VALID"
+                        },
+                        "strict": True,
+                        "showCustomUi": True
+                    }
+                }
+            }
+        ]
+
+        spreadsheet.batch_update({"requests": requests})
+        print("  [OK] Столбец 'Дней до решения' настроен с формулами и цветами")
+
+    except Exception as e:
+        print(f"  [WARN] Ошибка настройки условного форматирования: {e}")
 
 
 def process_products_file(excel_path, merchant_name="Sulpak"):
@@ -316,6 +479,10 @@ def process_products_file(excel_path, merchant_name="Sulpak"):
     print("[5] Проверка исчезнувших товаров...")
     disappeared = check_disappeared_products(sheet, current_skus, merchant_name)
     print(f"    Исчезло: {disappeared}")
+
+    # Настраиваем столбец "Дней до решения" (только один раз за сессию)
+    print("[6] Настройка столбца 'Дней до решения'...")
+    setup_days_column(sheet)
 
     print(f"\n[OK] Google Sheets обработан для {merchant_name}!")
     return {"added": added, "disappeared": disappeared}
