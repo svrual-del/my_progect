@@ -462,8 +462,33 @@ async def send_telegram(message, parse_mode=None):
         return None
 
 
+async def unpin_all_telegram_messages():
+    """Открепление всех сообщений в чате перед закреплением нового."""
+    print("  Открепление предыдущих сообщений...")
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/unpinAllChatMessages"
+    payload = {"chat_id": TELEGRAM_CHAT_ID}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                result = await resp.json()
+                if result.get("ok"):
+                    print("  [OK] Все сообщения откреплены")
+                    return True
+                else:
+                    print(f"  [WARN] Не удалось открепить: {result}")
+                    return False
+    except Exception as e:
+        print(f"  [WARN] ОШИБКА открепления: {e}")
+        return False
+
+
 async def pin_telegram_message(message_id):
-    """Закрепление сообщения в чате. Бот должен быть администратором с правом закреплять."""
+    """Закрепление сообщения в чате. Сначала открепляет все предыдущие."""
+    # Сначала открепляем все предыдущие сообщения
+    await unpin_all_telegram_messages()
+
     print(f"  Закрепление сообщения {message_id}...")
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/pinChatMessage"
