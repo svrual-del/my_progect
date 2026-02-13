@@ -18,7 +18,8 @@ from config import (
     DOWNLOADS_PATH,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
-    HEADLESS
+    HEADLESS,
+    MERCHANTS
 )
 
 # Создаём папку для загрузок
@@ -30,27 +31,27 @@ async def test_step1_login():
     print("\n" + "="*50)
     print("ЭТАП 1: АВТОРИЗАЦИЯ")
     print("="*50)
-    
+
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch(headless=HEADLESS)
     context = await browser.new_context(accept_downloads=True, locale='ru-RU')
     page = await context.new_page()
     page.set_default_timeout(60000)
-    
+
     try:
         # Переход на страницу входа
         print(f"[1] Переход на {KASPI_LOGIN_URL}")
         await page.goto(KASPI_LOGIN_URL)
         await asyncio.sleep(3)
         print(f"    Текущий URL: {page.url}")
-        
+
         # Клик на вкладку Email
         email_tab = await page.query_selector('a:has-text("Email"), button:has-text("Email"), [role="tab"]:has-text("Email")')
         if email_tab:
             await email_tab.click()
             await asyncio.sleep(1)
             print("[2] Выбрана вкладка Email")
-        
+
         # Ввод email
         login_input = await page.query_selector('#user_email_field, input[name="username"], input[placeholder="Email"], input.text-field')
         if login_input:
@@ -60,31 +61,31 @@ async def test_step1_login():
             print("[!] ОШИБКА: Поле email не найдено!")
             await browser.close()
             return None, None, None
-        
+
         # Кнопка "Продолжить"
         continue_btn = await page.query_selector('button:has-text("Продолжить"), button:has-text("Continue"), button[type="submit"]')
         if continue_btn:
             await continue_btn.click()
             print("[4] Нажата кнопка 'Продолжить'")
         await asyncio.sleep(3)
-        
+
         # Ввод пароля
         password_input = await page.query_selector('input[type="password"], input[name="password"]')
         if password_input:
             await password_input.fill(KASPI_PASSWORD)
             print("[5] Пароль введён")
-            
+
             login_btn = await page.query_selector('button:has-text("Войти"), button:has-text("Продолжить"), button[type="submit"]')
             if login_btn:
                 await login_btn.click()
                 print("[6] Нажата кнопка входа")
-            
+
             await asyncio.sleep(5)
         else:
             print("[!] Поле пароля не найдено")
-        
+
         print(f"[7] Текущий URL после входа: {page.url}")
-        
+
         # Проверка успеха
         if "login" not in page.url.lower():
             print("\n[OK] ЭТАП 1 УСПЕШЕН: Авторизация прошла!")
@@ -93,17 +94,105 @@ async def test_step1_login():
             print("\n[FAIL] ЭТАП 1 ПРОВАЛЕН: Остались на странице входа")
             await browser.close()
             return None, None, None
-            
+
     except Exception as e:
         print(f"\n[FAIL] ОШИБКА: {e}")
         await browser.close()
         return None, None, None
 
 
-async def navigate_and_download(page, category_key, step_label=""):
+async def switch_merchant(page, merchant_id, merchant_name):
+    """Переключение на другого мерчанта через выпадающий список"""
+    print("\n" + "="*50)
+    print(f"ПЕРЕКЛЮЧЕНИЕ НА МЕРЧАНТА: {merchant_name} (ID: {merchant_id})")
+    print("="*50)
+
+    try:
+        # Ищем кнопку переключения мерчанта в header
+        # На скрине это элемент "ID - 30409770" с иконкой стрелки вниз
+        # Ищем в верхней части страницы (y < 80)
+
+        dropdown_button = None
+        all_elements = await page.query_selector_all('*')
+
+        for elem in all_elements:
+            try:
+                box = await elem.bounding_box()
+                if not box or box['y'] > 80 or box['x'] < 800:  # Справа вверху
+                    continue
+
+                text = await elem.inner_text()
+                # Ищем элемент с текстом "ID - " (текущий мерчант)
+                if text and "ID -" in text and len(text) < 50:
+                    # Это наш переключатель
+                    dropdown_button = elem
+                    current_text = text.strip()
+                    print(f"[1] Найден переключатель: '{current_text}'")
+
+                    # Проверяем, уже ли на нужном мерчанте
+                    if f"ID - {merchant_id}" in current_text:
+                        print(f"[OK] Уже на мерчанте {merchant_name}")
+                        return True
+                    break
+            except:
+                continue
+
+        if not dropdown_button:
+            print("[!] Переключатель мерчантов не найден")
+            return False
+
+        # Кликаем чтобы открыть список
+        await dropdown_button.click()
+        await asyncio.sleep(2)
+        print("[2] Список открыт")
+
+        # Ищем нужный вариант в выпадающем списке
+        target_text = f"ID - {merchant_id}"
+
+        # Ищем элемент списка с нужным текстом
+        options = await page.query_selector_all('div, li, a, span')
+        target_option = None
+
+        for opt in options:
+            try:
+                text = await opt.inner_text()
+                if text and target_text in text and len(text) < 50:
+                    box = await opt.bounding_box()
+                    # Элемент должен быть видимым (высота > 0) и в разумных координатах
+                    if box and box['height'] > 10 and box['y'] > 50 and box['y'] < 300:
+                        target_option = opt
+                        print(f"    Найден вариант: '{text.strip()}'")
+                        break
+            except:
+                continue
+
+        if target_option:
+            await target_option.click()
+            await asyncio.sleep(5)
+            print(f"[3] Переключаемся на {merchant_name}...")
+
+            # Ждём перезагрузку страницы
+            try:
+                await page.wait_for_load_state('networkidle', timeout=15000)
+            except:
+                pass
+
+            print(f"    Текущий URL: {page.url}")
+            return True
+        else:
+            print(f"[!] Вариант '{target_text}' не найден")
+            return False
+
+    except Exception as e:
+        err_msg = str(e).encode('ascii', errors='replace').decode('ascii')
+        print(f"[FAIL] ОШИБКА переключения: {err_msg}")
+        return False
+
+
+async def navigate_and_download(page, category_key, step_label="", merchant_name=""):
     """Переход в раздел и скачивание Excel"""
     print("\n" + "="*50)
-    print(f"СКАЧИВАНИЕ EXCEL: {step_label}")
+    print(f"СКАЧИВАНИЕ EXCEL: {step_label} ({merchant_name})")
     print("="*50)
 
     # Маппинг ключей категорий на текст вкладок на странице
@@ -153,7 +242,7 @@ async def navigate_and_download(page, category_key, step_label=""):
         # Ждём загрузки таблицы
         print("[3] Ожидание загрузки страницы...")
         await asyncio.sleep(3)
-        
+
         # Ищем кнопку скачивания (только видимую!)
         print("[4] Поиск видимой кнопки скачивания...")
 
@@ -188,34 +277,34 @@ async def navigate_and_download(page, category_key, step_label=""):
                 if 'excel' in text.lower() or 'выгрузить' in text.lower():
                     button = btn
                     break
-        
+
         if not button:
             print("\n[FAIL] ЭТАП 2 ПРОВАЛЕН: Кнопка Excel не найдена")
             print("   Проверьте браузер - есть ли там товары и кнопка?")
             return None
-        
+
         print("[5] Кнопка найдена, скачиваем...")
 
         # Скачиваем файл
         async with page.expect_download(timeout=60000) as download_info:
             await button.click()
-        
+
         download = await download_info.value
         orig_name = download.suggested_filename or "kaspi_export.xlsx"
-        # Добавляем timestamp чтобы избежать блокировки файла
+        # Добавляем timestamp и название мерчанта
         name_base, name_ext = os.path.splitext(orig_name)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f"{name_base}_{timestamp}{name_ext}"
+        file_name = f"{name_base}_{merchant_name}_{timestamp}{name_ext}"
         file_path = os.path.join(DOWNLOADS_PATH, file_name)
         await download.save_as(file_path)
-        
+
         print(f"    Имя файла: {file_name}")
         if "activeorders" in file_name.lower() or "order" in file_name.lower():
             print("    [!] ВНИМАНИЕ: Скачан файл заказов, а не товаров!")
             print("        Возможно, навигация на страницу товаров не сработала.")
         print(f"\n[OK] ЭТАП 2 УСПЕШЕН: Файл сохранён: {file_path}")
         return file_path
-        
+
     except Exception as e:
         err_msg = str(e).encode('ascii', errors='replace').decode('ascii')
         print(f"\n[FAIL] ОШИБКА: {err_msg}")
@@ -367,10 +456,10 @@ async def send_telegram_file(file_path, caption=""):
         return False
 
 
-async def process_category(page, category_key, step_label):
+async def process_category(page, category_key, step_label, merchant_name=""):
     """Обработка одной категории: скачивание и анализ. Возвращает (stats, file_path) или (None, None)."""
     # Скачивание Excel
-    file_path = await navigate_and_download(page, category_key, step_label)
+    file_path = await navigate_and_download(page, category_key, step_label, merchant_name)
     if not file_path:
         print(f"\n[STOP] Не удалось скачать Excel для '{step_label}'")
         return None, None
@@ -386,8 +475,8 @@ async def process_category(page, category_key, step_label):
     return stats, file_path
 
 
-def build_report_message(results):
-    """Формирует сводное сообщение-таблицу для Telegram"""
+def build_report_message(all_results):
+    """Формирует сводное сообщение-таблицу для Telegram с несколькими мерчантами"""
     today = datetime.now().strftime("%d.%m.%Y")
 
     # Короткие названия для таблицы
@@ -399,28 +488,43 @@ def build_report_message(results):
     ]
 
     lines = []
-    lines.append(f"Kaspi Sulpak | {today}")
-    lines.append("-" * 34)
-    lines.append(f"{'Категория':<17}|{'Всего':>7}|{'30000':>7}")
-    lines.append("-" * 34)
+    lines.append(f"Kaspi Report | {today}")
+    lines.append("=" * 45)
 
-    sum_total = 0
-    sum_30000 = 0
+    grand_total = 0
+    grand_30000 = 0
 
-    for label, key in labels:
-        stats = results.get(key)
-        if stats:
-            t = stats["total"]
-            c = stats["count_30000"]
-        else:
-            t = 0
-            c = 0
-        sum_total += t
-        sum_30000 += c
-        lines.append(f"{label:<17}|{t:>7}|{c:>7}")
+    # Для каждого мерчанта
+    for merchant_name, results in all_results.items():
+        lines.append(f"\n{merchant_name}")
+        lines.append("-" * 34)
+        lines.append(f"{'Категория':<17}|{'Всего':>7}|{'30000':>7}")
+        lines.append("-" * 34)
 
-    lines.append("-" * 34)
-    lines.append(f"{'ИТОГО':<17}|{sum_total:>7}|{sum_30000:>7}")
+        sum_total = 0
+        sum_30000 = 0
+
+        for label, key in labels:
+            stats = results.get(key)
+            if stats:
+                t = stats["total"]
+                c = stats["count_30000"]
+            else:
+                t = 0
+                c = 0
+            sum_total += t
+            sum_30000 += c
+            lines.append(f"{label:<17}|{t:>7}|{c:>7}")
+
+        lines.append("-" * 34)
+        lines.append(f"{'Итого ' + merchant_name:<17}|{sum_total:>7}|{sum_30000:>7}")
+
+        grand_total += sum_total
+        grand_30000 += sum_30000
+
+    # Общий итог
+    lines.append("\n" + "=" * 45)
+    lines.append(f"{'ВСЕГО':<17}|{grand_total:>7}|{grand_30000:>7}")
 
     table = "\n".join(lines)
 
@@ -428,6 +532,33 @@ def build_report_message(results):
     sheets_url = "https://docs.google.com/spreadsheets/d/16NoTXUjutOw_anh_oSuufYEEfEu6FiHGm9OFnrSkdN8"
 
     return f"<pre>{table}</pre>\n\n<a href=\"{sheets_url}\">Задачи контент-менеджерам</a>"
+
+
+async def process_merchant(page, merchant, categories):
+    """Обработка одного мерчанта: переключение и сбор данных по всем категориям"""
+    merchant_id = merchant["id"]
+    merchant_name = merchant["name"]
+
+    # Переключаемся на мерчанта (для первого это необязательно, он по умолчанию)
+    if MERCHANTS.index(merchant) > 0:
+        switched = await switch_merchant(page, merchant_id, merchant_name)
+        if not switched:
+            print(f"[WARN] Не удалось переключиться на {merchant_name}, пробуем продолжить...")
+
+    # Переходим на страницу нераспознанных товаров
+    await page.goto(CATEGORY_URLS["без_привязки"], timeout=60000)
+    await asyncio.sleep(3)
+
+    # Собираем статистику и пути к файлам по всем категориям
+    results = {}
+    files = {}
+    for category_key, step_label in categories:
+        stats, file_path = await process_category(page, category_key, step_label, merchant_name)
+        results[category_key] = stats
+        files[category_key] = file_path
+        await asyncio.sleep(2)
+
+    return results, files
 
 
 async def main():
@@ -453,53 +584,54 @@ async def main():
         ("отклонены", "Отклонены"),
     ]
 
-    # Собираем статистику и пути к файлам по всем категориям
-    results = {}
-    files = {}
-    for category_key, step_label in categories:
-        stats, file_path = await process_category(page, category_key, step_label)
-        results[category_key] = stats
-        files[category_key] = file_path
-        await asyncio.sleep(2)
+    # Словари для хранения данных по всем мерчантам
+    all_results = {}  # {merchant_name: {category: stats}}
+    all_files = {}    # {merchant_name: {category: file_path}}
+
+    # Обрабатываем каждого мерчанта
+    for merchant in MERCHANTS:
+        merchant_name = merchant["name"]
+        print(f"\n{'='*50}")
+        print(f"ОБРАБОТКА МЕРЧАНТА: {merchant_name}")
+        print(f"{'='*50}")
+
+        results, files = await process_merchant(page, merchant, categories)
+        all_results[merchant_name] = results
+        all_files[merchant_name] = files
 
     # Формируем и отправляем сводный отчёт
     print("\n" + "="*50)
     print("ОТПРАВКА СВОДНОГО ОТЧЁТА В TELEGRAM")
     print("="*50)
 
-    message = build_report_message(results)
+    message = build_report_message(all_results)
     message_id = await send_telegram(message, parse_mode="HTML")
 
     # Закрепляем сообщение в группе (бот должен быть админом)
     if message_id:
         await pin_telegram_message(message_id)
 
-    # Отправляем Excel-файлы
+    # Обработка Google Sheets (для "Без привязки" всех мерчантов)
     print("\n" + "="*50)
-    print("ОТПРАВКА EXCEL-ФАЙЛОВ В TELEGRAM")
+    print("ОБРАБОТКА GOOGLE SHEETS")
     print("="*50)
 
-    for category_key, step_label in categories:
-        # Пропускаем "Без привязки" — он теперь в Google Sheets
-        if category_key == "без_привязки":
-            continue
-        file_path = files.get(category_key)
-        if file_path and os.path.exists(file_path):
-            await send_telegram_file(file_path, caption=step_label)
-            await asyncio.sleep(1)
+    for merchant in MERCHANTS:
+        merchant_name = merchant["name"]
+        files = all_files.get(merchant_name, {})
+        bez_privyazki_file = files.get("без_привязки")
 
-    # Обработка Google Sheets (только для "Без привязки")
-    bez_privyazki_file = files.get("без_привязки")
-    if bez_privyazki_file and os.path.exists(bez_privyazki_file):
-        try:
-            from google_sheets import process_products_file
-            process_products_file(bez_privyazki_file)
-        except Exception as e:
-            err_msg = str(e).encode('ascii', errors='replace').decode('ascii')
-            print(f"[WARN] Ошибка Google Sheets: {err_msg}")
+        if bez_privyazki_file and os.path.exists(bez_privyazki_file):
+            try:
+                from google_sheets import process_products_file
+                print(f"\n[Google Sheets] Обработка {merchant_name}...")
+                process_products_file(bez_privyazki_file, merchant_name=merchant_name)
+            except Exception as e:
+                err_msg = str(e).encode('ascii', errors='replace').decode('ascii')
+                print(f"[WARN] Ошибка Google Sheets для {merchant_name}: {err_msg}")
 
     print("\n" + "="*50)
-    print("ВСЕ КАТЕГОРИИ ОБРАБОТАНЫ!")
+    print("ВСЕ МЕРЧАНТЫ ОБРАБОТАНЫ!")
     print("="*50)
 
     await asyncio.sleep(2)

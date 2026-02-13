@@ -29,8 +29,8 @@ COLOR_RED = {"red": 1.0, "green": 0.8, "blue": 0.8}      # Красный фон
 COLOR_GREEN = {"red": 0.8, "green": 1.0, "blue": 0.8}    # Зелёный фон (не 30000)
 COLOR_WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}    # Белый (обычный)
 
-# Структура столбцов
-COLUMNS = ["Артикул", "Название товара", "Дата добавления", "Менеджер", "Отметка менеджера", "Дата исчезновения"]
+# Структура столбцов (добавлен столбец "Кабинет" первым)
+COLUMNS = ["Кабинет", "Артикул", "Название товара", "Дата добавления", "Менеджер", "Отметка менеджера", "Дата исчезновения"]
 
 
 def get_sheet():
@@ -55,24 +55,57 @@ def get_or_create_month_sheet(spreadsheet, month_name=None):
     try:
         sheet = spreadsheet.worksheet(month_name)
         print(f"  [OK] Найден лист: {month_name}")
+
+        # Проверяем, есть ли столбец "Кабинет" (миграция старых листов)
+        headers = sheet.row_values(1)
+        if headers and headers[0] != "Кабинет":
+            print(f"  [INFO] Миграция листа: добавление столбца 'Кабинет'...")
+            # Вставляем новый столбец A
+            sheet.insert_cols([["Кабинет"]], col=1)
+            # Помечаем старые записи как "Sulpak" (для совместимости)
+            all_data = sheet.get_all_values()
+            if len(all_data) > 1:
+                updates = [["Sulpak"] for _ in range(len(all_data) - 1)]
+                sheet.update(f"A2:A{len(all_data)}", updates)
+            print(f"  [OK] Миграция завершена")
+
     except gspread.WorksheetNotFound:
         # Создаём новый лист с заголовками
         sheet = spreadsheet.add_worksheet(title=month_name, rows=1000, cols=10)
         sheet.append_row(COLUMNS)
         # Форматируем заголовок (жирный)
-        sheet.format("A1:F1", {"textFormat": {"bold": True}})
+        sheet.format("A1:G1", {"textFormat": {"bold": True}})
         print(f"  [OK] Создан новый лист: {month_name}")
 
     return sheet
 
 
 def get_existing_skus(sheet):
-    """Получить список уже добавленных артикулов"""
+    """Получить список уже добавленных артикулов со всех кабинетов"""
     try:
-        # Получаем все значения из столбца A (артикулы)
-        values = sheet.col_values(1)
-        # Пропускаем заголовок
-        skus = set(values[1:]) if len(values) > 1 else set()
+        # Получаем все значения из столбцов A (кабинет) и B (артикулы)
+        all_data = sheet.get_all_values()
+        # Создаём set кортежей (кабинет, артикул) для уникальности
+        skus = set()
+        for row in all_data[1:]:  # Пропускаем заголовок
+            if len(row) >= 2:
+                merchant = row[0]  # Столбец A — Кабинет
+                sku = row[1]       # Столбец B — Артикул
+                skus.add((merchant, sku))
+        return skus
+    except Exception as e:
+        print(f"  [WARN] Ошибка получения артикулов: {e}")
+        return set()
+
+
+def get_all_skus(sheet):
+    """Получить все артикулы без учёта кабинета (для проверки дубликатов между кабинетами)"""
+    try:
+        all_data = sheet.get_all_values()
+        skus = set()
+        for row in all_data[1:]:
+            if len(row) >= 2:
+                skus.add(row[1])  # Столбец B — Артикул
         return skus
     except Exception as e:
         print(f"  [WARN] Ошибка получения артикулов: {e}")
@@ -86,10 +119,10 @@ def get_manager_loads(sheet):
         loads = {manager: 0 for manager in MANAGERS}
 
         for row in all_data[1:]:  # Пропускаем заголовок
-            # Столбец D (индекс 3) — Менеджер
-            # Столбец E (индекс 4) — Отметка менеджера (пусто = не завершено)
-            if len(row) > 4 and row[3] in loads and not row[4]:
-                loads[row[3]] += 1
+            # Столбец E (индекс 4) — Менеджер
+            # Столбец F (индекс 5) — Отметка менеджера (пусто = не завершено)
+            if len(row) > 5 and row[4] in loads and not row[5]:
+                loads[row[4]] += 1
 
         return loads
     except Exception as e:
@@ -113,19 +146,22 @@ def is_not_30000(sku):
     return not str(sku).startswith("30000")
 
 
-def add_products_to_sheet(sheet, products):
+def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
     """
     Добавить товары в таблицу
     products: список словарей {"sku": "123", "name": "Товар..."}
+    merchant_name: название кабинета (Sulpak, ARG и т.д.)
     Возвращает количество добавленных
     """
-    existing_skus = get_existing_skus(sheet)
+    existing_skus = get_existing_skus(sheet)  # set of (merchant, sku)
+    all_skus = get_all_skus(sheet)  # set of sku (для проверки дубликатов между кабинетами)
     today = datetime.now().strftime("%d.%m.%Y")
 
     # Получаем загрузку всех менеджеров одним запросом
     loads = get_manager_loads(sheet)
 
     added_count = 0
+    skipped_duplicates = 0
     rows_to_add = []
     row_colors = []
 
@@ -133,8 +169,13 @@ def add_products_to_sheet(sheet, products):
         sku = str(product["sku"])
         name = product["name"]
 
-        # Пропускаем если уже есть
-        if sku in existing_skus:
+        # Пропускаем если уже есть в этом кабинете
+        if (merchant_name, sku) in existing_skus:
+            continue
+
+        # Пропускаем если артикул уже есть в другом кабинете (чтобы не дублировать)
+        if sku in all_skus:
+            skipped_duplicates += 1
             continue
 
         # Случайный выбор менеджера с минимальной загрузкой
@@ -146,8 +187,8 @@ def add_products_to_sheet(sheet, products):
         manager = random.choice(candidates)
         loads[manager] += 1  # Увеличиваем локальный счётчик
 
-        # Добавляем строку
-        row = [sku, name, today, manager, "", ""]
+        # Добавляем строку (с кабинетом в первом столбце)
+        row = [merchant_name, sku, name, today, manager, "", ""]
         rows_to_add.append(row)
 
         # Определяем цвет
@@ -158,7 +199,8 @@ def add_products_to_sheet(sheet, products):
         else:
             row_colors.append(COLOR_WHITE)
 
-        existing_skus.add(sku)  # Чтобы не дублировать в этой сессии
+        existing_skus.add((merchant_name, sku))  # Чтобы не дублировать в этой сессии
+        all_skus.add(sku)
         added_count += 1
 
     # Пакетное добавление строк
@@ -174,17 +216,21 @@ def add_products_to_sheet(sheet, products):
         for i, color in enumerate(row_colors):
             row_num = start_row + i
             if color != COLOR_WHITE:
-                sheet.format(f"A{row_num}:F{row_num}", {"backgroundColor": color})
+                sheet.format(f"A{row_num}:G{row_num}", {"backgroundColor": color})
 
         print(f"  [OK] Цвета применены")
+
+    if skipped_duplicates > 0:
+        print(f"  [INFO] Пропущено дубликатов (есть в другом кабинете): {skipped_duplicates}")
 
     return added_count
 
 
-def check_disappeared_products(sheet, current_skus):
+def check_disappeared_products(sheet, current_skus, merchant_name="Sulpak"):
     """
     Проверить исчезнувшие товары и поставить дату исчезновения
     current_skus: set артикулов из текущего файла "Без привязки"
+    merchant_name: проверяем только для конкретного кабинета
     """
     today = datetime.now().strftime("%d.%m.%Y")
     current_skus_set = set(str(s) for s in current_skus)
@@ -193,33 +239,39 @@ def check_disappeared_products(sheet, current_skus):
     updated_count = 0
 
     for i, row in enumerate(all_data[1:], start=2):  # start=2 потому что строка 1 = заголовок
-        if len(row) < 6:
+        if len(row) < 7:
             continue
 
-        sku = row[0]
-        date_disappeared = row[5]  # Столбец F — Дата исчезновения
+        merchant = row[0]           # Столбец A — Кабинет
+        sku = row[1]                # Столбец B — Артикул
+        date_disappeared = row[6]   # Столбец G — Дата исчезновения
+
+        # Проверяем только для нужного кабинета
+        if merchant != merchant_name:
+            continue
 
         # Если артикул исчез и дата ещё не проставлена
         if sku not in current_skus_set and not date_disappeared:
-            sheet.update_cell(i, 6, today)  # Столбец F = 6
+            sheet.update_cell(i, 7, today)  # Столбец G = 7
             updated_count += 1
 
     if updated_count:
-        print(f"  [OK] Отмечено исчезнувших: {updated_count}")
+        print(f"  [OK] Отмечено исчезнувших ({merchant_name}): {updated_count}")
 
     return updated_count
 
 
-def process_products_file(excel_path):
+def process_products_file(excel_path, merchant_name="Sulpak"):
     """
     Основная функция: обработать файл "Без привязки"
     - Добавить новые товары в таблицу
     - Отметить исчезнувшие
+    merchant_name: название кабинета (Sulpak, ARG и т.д.)
     """
     import pandas as pd
 
     print("\n" + "="*50)
-    print("ОБРАБОТКА GOOGLE SHEETS")
+    print(f"ОБРАБОТКА GOOGLE SHEETS ({merchant_name})")
     print("="*50)
 
     # Читаем Excel
@@ -257,15 +309,15 @@ def process_products_file(excel_path):
 
     # Добавляем новые товары
     print("[4] Добавление новых товаров...")
-    added = add_products_to_sheet(sheet, products)
+    added = add_products_to_sheet(sheet, products, merchant_name)
     print(f"    Новых добавлено: {added}")
 
-    # Проверяем исчезнувшие
+    # Проверяем исчезнувшие (только для данного кабинета)
     print("[5] Проверка исчезнувших товаров...")
-    disappeared = check_disappeared_products(sheet, current_skus)
+    disappeared = check_disappeared_products(sheet, current_skus, merchant_name)
     print(f"    Исчезло: {disappeared}")
 
-    print("\n[OK] Google Sheets обработан!")
+    print(f"\n[OK] Google Sheets обработан для {merchant_name}!")
     return {"added": added, "disappeared": disappeared}
 
 
@@ -280,6 +332,6 @@ if __name__ == "__main__":
         print(f"[OK] Текущий лист: {sheet.title}")
 
         existing = get_existing_skus(sheet)
-        print(f"[OK] Артикулов в листе: {len(existing)}")
+        print(f"[OK] Записей в листе: {len(existing)}")
     except Exception as e:
         print(f"[FAIL] Ошибка: {e}")

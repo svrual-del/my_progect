@@ -11,6 +11,16 @@ KASPI_PASSWORD = os.environ.get("KASPI_PASSWORD", "resMy3002Kasp!")
 KASPI_LOGIN_URL = "https://idmc.shop.kaspi.kz/login"
 KASPI_PRODUCTS_BASE_URL = "https://kaspi.kz/mc/#/products/pending"
 
+# Список мерчантов для обработки
+# id — текст в выпадающем списке после "ID - " (Sulpak, 30409770, 30382295)
+# name — название для отчётов
+# sheet_name — название листа в Excel
+MERCHANTS = [
+    {"id": "Sulpak", "name": "Sulpak", "sheet_name": "Sulpak"},
+    {"id": "30409770", "name": "ARG", "sheet_name": "ARG"},
+    {"id": "30382295", "name": "Motorola", "sheet_name": "Motorola"},
+]
+
 # URL для каждой категории нераспознанных товаров
 CATEGORY_URLS = {
     "без_привязки": "https://kaspi.kz/mc/#/products/pending/CHECK/1",
