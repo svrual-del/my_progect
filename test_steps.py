@@ -396,7 +396,11 @@ def build_report_message(results):
     lines.append(f"{'ИТОГО':<17}|{sum_total:>7}|{sum_30000:>7}")
 
     table = "\n".join(lines)
-    return f"<pre>{table}</pre>"
+
+    # Ссылка на Google Таблицу с задачами
+    sheets_url = "https://docs.google.com/spreadsheets/d/16NoTXUjutOw_anh_oSuufYEEfEu6FiHGm9OFnrSkdN8"
+
+    return f"<pre>{table}</pre>\n\n<a href=\"{sheets_url}\">Задачи контент-менеджерам</a>"
 
 
 async def main():
@@ -445,10 +449,23 @@ async def main():
     print("="*50)
 
     for category_key, step_label in categories:
+        # Пропускаем "Без привязки" — он теперь в Google Sheets
+        if category_key == "без_привязки":
+            continue
         file_path = files.get(category_key)
         if file_path and os.path.exists(file_path):
             await send_telegram_file(file_path, caption=step_label)
             await asyncio.sleep(1)
+
+    # Обработка Google Sheets (только для "Без привязки")
+    bez_privyazki_file = files.get("без_привязки")
+    if bez_privyazki_file and os.path.exists(bez_privyazki_file):
+        try:
+            from google_sheets import process_products_file
+            process_products_file(bez_privyazki_file)
+        except Exception as e:
+            err_msg = str(e).encode('ascii', errors='replace').decode('ascii')
+            print(f"[WARN] Ошибка Google Sheets: {err_msg}")
 
     print("\n" + "="*50)
     print("ВСЕ КАТЕГОРИИ ОБРАБОТАНЫ!")
