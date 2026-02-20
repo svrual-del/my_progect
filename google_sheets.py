@@ -226,7 +226,7 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
 
     # Пакетное добавление строк
     if rows_to_add:
-        sheet.append_rows(rows_to_add)
+        sheet.append_rows(rows_to_add, value_input_option="USER_ENTERED")
         print(f"  [OK] Добавлено строк: {len(rows_to_add)}")
 
         # Применяем цвета
@@ -284,9 +284,10 @@ def check_disappeared_products(sheet, current_skus, merchant_name="Sulpak"):
 def setup_days_column(sheet):
     """
     Настройка столбца H (Дней до решения):
-    - Формула: Дата исчезновения - Отметка менеджера
-    - Если отметка есть, а исчезновения нет — показываем "ОБМАН"
-    - Цвета: красный (отрицательное, >2, или ОБМАН), зелёный (0-2)
+    - Если F (отметка) есть, а G (исчезновение) нет — "ОБМАН"
+    - Если G заполнена — G - D (дата исчезновения - дата добавления)
+    - Зелёный: 1-3 дня (норма)
+    - Красный: > 3 дней (долго), ОБМАН
     """
     all_data = sheet.get_all_values()
     if len(all_data) <= 1:
@@ -295,33 +296,31 @@ def setup_days_column(sheet):
     # Проверяем, есть ли столбец H
     headers = all_data[0]
     if len(headers) < 8 or headers[7] != "Дней до решения":
-        # Добавляем заголовок
         sheet.update_cell(1, 8, "Дней до решения")
         sheet.format("H1", {"textFormat": {"bold": True}})
 
     # Обновляем формулы для всех строк
+    # Приоритет: ОБМАН (F заполнена, G пустая) > G-D (если G есть) > пусто
     updates = []
     for i in range(2, len(all_data) + 1):
-        # Формула:
-        # - Если F (отметка) заполнена, а G (исчезновение) пустая — "ОБМАН"
-        # - Если оба заполнены — разница G-F
-        # - Иначе — пусто
-        # F = Отметка менеджера, G = Дата исчезновения
-        formula = f'=ЕСЛИ(И(F{i}<>"";G{i}="");"ОБМАН";ЕСЛИ(И(F{i}<>"";G{i}<>"");G{i}-F{i};""))'
+        formula = f'=ЕСЛИ(И(F{i}<>"";G{i}="");"ОБМАН";ЕСЛИ(G{i}<>"";ЦЕЛОЕ(G{i}-D{i});""))'
         updates.append({"range": f"H{i}", "values": [[formula]]})
 
     if updates:
-        # Пакетное обновление формул
         sheet.batch_update(updates, value_input_option="USER_ENTERED")
 
-    # Применяем условное форматирование для столбца H
-    # Используем Data Validation для столбца F (только дата)
+    # Принудительно задаём числовой формат для столбца H (чтобы не показывало дату)
+    try:
+        sheet.format(f"H2:H{len(all_data)}", {"numberFormat": {"type": "NUMBER", "pattern": "0"}})
+    except Exception:
+        pass
+
+    # Условное форматирование и валидация
     try:
         spreadsheet = sheet.spreadsheet
 
-        # Условное форматирование через API
         requests = [
-            # Красный для текста "ОБМАН" (отметка есть, исчезновения нет)
+            # Красный жирный для "ОБМАН" (отметка менеджера есть, а товар не исчез)
             {
                 "addConditionalFormatRule": {
                     "rule": {
@@ -345,30 +344,7 @@ def setup_days_column(sheet):
                     "index": 0
                 }
             },
-            # Красный для отрицательных значений (H < 0)
-            {
-                "addConditionalFormatRule": {
-                    "rule": {
-                        "ranges": [{
-                            "sheetId": sheet.id,
-                            "startColumnIndex": 7,
-                            "endColumnIndex": 8,
-                            "startRowIndex": 1
-                        }],
-                        "booleanRule": {
-                            "condition": {
-                                "type": "NUMBER_LESS",
-                                "values": [{"userEnteredValue": "0"}]
-                            },
-                            "format": {
-                                "backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}
-                            }
-                        }
-                    },
-                    "index": 1
-                }
-            },
-            # Красный для значений > 2
+            # Красный для значений > 3
             {
                 "addConditionalFormatRule": {
                     "rule": {
@@ -381,17 +357,17 @@ def setup_days_column(sheet):
                         "booleanRule": {
                             "condition": {
                                 "type": "NUMBER_GREATER",
-                                "values": [{"userEnteredValue": "2"}]
+                                "values": [{"userEnteredValue": "3"}]
                             },
                             "format": {
                                 "backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}
                             }
                         }
                     },
-                    "index": 2
+                    "index": 1
                 }
             },
-            # Зелёный для значений 0-2
+            # Зелёный для значений 1-3
             {
                 "addConditionalFormatRule": {
                     "rule": {
@@ -405,8 +381,8 @@ def setup_days_column(sheet):
                             "condition": {
                                 "type": "NUMBER_BETWEEN",
                                 "values": [
-                                    {"userEnteredValue": "0"},
-                                    {"userEnteredValue": "2"}
+                                    {"userEnteredValue": "1"},
+                                    {"userEnteredValue": "3"}
                                 ]
                             },
                             "format": {
@@ -414,7 +390,7 @@ def setup_days_column(sheet):
                             }
                         }
                     },
-                    "index": 3
+                    "index": 2
                 }
             },
             # Data Validation для столбца F (Отметка менеджера) — только дата
@@ -438,7 +414,7 @@ def setup_days_column(sheet):
         ]
 
         spreadsheet.batch_update({"requests": requests})
-        print("  [OK] Столбец 'Дней до решения' настроен с формулами и цветами")
+        print("  [OK] Столбец 'Дней до решения' настроен (G-D, зелёный 1-3, красный >3)")
 
     except Exception as e:
         print(f"  [WARN] Ошибка настройки условного форматирования: {e}")
