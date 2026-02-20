@@ -13,16 +13,27 @@ from google.oauth2.service_account import Credentials
 CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "google-credentials.json")
 SPREADSHEET_ID = "16NoTXUjutOw_anh_oSuufYEEfEu6FiHGm9OFnrSkdN8"
 
-# Список менеджеров
-MANAGERS = [
-    "Котенко Екатерина Константиновна",
-    "Дементьева Алина Владимировна",
-    "Кононенко Михаил Валерьевич",
-    "Величковская Алиса Леонидовна",
-    "Асреп Жулдыз Ерланкызы",
-    "Тохсеитова Диана Жорабековна",
-    "Сариева Дана Агадилдақызы",
-]
+# Список менеджеров — загружается из managers.txt (по одному на строку)
+# Если файл не найден, используется список по умолчанию
+MANAGERS_FILE = os.path.join(os.path.dirname(__file__), "managers.txt")
+
+def load_managers():
+    """Загрузка списка менеджеров из файла managers.txt"""
+    if os.path.exists(MANAGERS_FILE):
+        with open(MANAGERS_FILE, "r", encoding="utf-8") as f:
+            managers = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        if managers:
+            return managers
+    # Список по умолчанию, если файл не найден
+    return [
+        "Дементьева Алина Владимировна",
+        "Кононенко Михаил Валерьевич",
+        "Величковская Алиса Леонидовна",
+        "Асреп Жулдыз Ерланкызы",
+        "Тохсеитова Диана Жорабековна",
+    ]
+
+MANAGERS = load_managers()
 
 # Цвета для подсветки (RGB от 0 до 1)
 COLOR_RED = {"red": 1.0, "green": 0.8, "blue": 0.8}      # Красный фон (ARG)
@@ -98,18 +109,20 @@ def get_existing_skus(sheet):
         return set()
 
 
-def get_all_skus(sheet):
-    """Получить все артикулы без учёта кабинета (для проверки дубликатов между кабинетами)"""
+def get_sku_rows(sheet):
+    """Получить словарь артикулов с номерами строк и кабинетами: {sku: {"row": N, "merchant": "Sulpak"}}"""
     try:
         all_data = sheet.get_all_values()
-        skus = set()
-        for row in all_data[1:]:
+        sku_map = {}
+        for i, row in enumerate(all_data[1:], start=2):
             if len(row) >= 2:
-                skus.add(row[1])  # Столбец B — Артикул
-        return skus
+                sku = row[1]       # Столбец B — Артикул
+                merchant = row[0]  # Столбец A — Кабинет
+                sku_map[sku] = {"row": i, "merchant": merchant}
+        return sku_map
     except Exception as e:
         print(f"  [WARN] Ошибка получения артикулов: {e}")
-        return set()
+        return {}
 
 
 def get_manager_loads(sheet):
@@ -151,17 +164,18 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
     Добавить товары в таблицу
     products: список словарей {"sku": "123", "name": "Товар..."}
     merchant_name: название кабинета (Sulpak, ARG и т.д.)
+    Если артикул уже есть в другом кабинете — добавляем кабинет через "+"
     Возвращает количество добавленных
     """
     existing_skus = get_existing_skus(sheet)  # set of (merchant, sku)
-    all_skus = get_all_skus(sheet)  # set of sku (для проверки дубликатов между кабинетами)
+    sku_rows = get_sku_rows(sheet)  # {sku: {"row": N, "merchant": "Sulpak"}}
     today = datetime.now().strftime("%d.%m.%Y")
 
     # Получаем загрузку всех менеджеров одним запросом
     loads = get_manager_loads(sheet)
 
     added_count = 0
-    skipped_duplicates = 0
+    merged_count = 0
     rows_to_add = []
     row_colors = []
 
@@ -169,23 +183,30 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
         sku = str(product["sku"])
         name = product["name"]
 
-        # Пропускаем если уже есть в этом кабинете
+        # Пропускаем если уже есть именно в этом кабинете
         if (merchant_name, sku) in existing_skus:
             continue
 
-        # Пропускаем если артикул уже есть в другом кабинете (чтобы не дублировать)
-        if sku in all_skus:
-            skipped_duplicates += 1
+        # Если артикул есть в другом кабинете — обновляем столбец "Кабинет" через "+"
+        if sku in sku_rows:
+            info = sku_rows[sku]
+            current_merchant = info["merchant"]
+            row_num = info["row"]
+            # Проверяем что наш кабинет ещё не в списке
+            if merchant_name not in current_merchant:
+                new_merchant = f"{current_merchant}+{merchant_name}"
+                sheet.update_cell(row_num, 1, new_merchant)
+                # Обновляем локальный кэш
+                sku_rows[sku]["merchant"] = new_merchant
+                merged_count += 1
+            existing_skus.add((merchant_name, sku))
             continue
 
         # Случайный выбор менеджера с минимальной загрузкой
-        # Сначала находим минимальную загрузку
         min_load = min(loads.values())
-        # Берём всех менеджеров с минимальной загрузкой
         candidates = [m for m, load in loads.items() if load == min_load]
-        # Случайный выбор из них
         manager = random.choice(candidates)
-        loads[manager] += 1  # Увеличиваем локальный счётчик
+        loads[manager] += 1
 
         # Добавляем строку (с кабинетом в первом столбце)
         row = [merchant_name, sku, name, today, manager, "", ""]
@@ -199,8 +220,8 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
         else:
             row_colors.append(COLOR_WHITE)
 
-        existing_skus.add((merchant_name, sku))  # Чтобы не дублировать в этой сессии
-        all_skus.add(sku)
+        existing_skus.add((merchant_name, sku))
+        sku_rows[sku] = {"row": -1, "merchant": merchant_name}  # -1 т.к. ещё не записана
         added_count += 1
 
     # Пакетное добавление строк
@@ -209,7 +230,6 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
         print(f"  [OK] Добавлено строк: {len(rows_to_add)}")
 
         # Применяем цвета
-        # Находим номер первой добавленной строки
         all_values = sheet.get_all_values()
         start_row = len(all_values) - len(rows_to_add) + 1
 
@@ -220,8 +240,8 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
 
         print(f"  [OK] Цвета применены")
 
-    if skipped_duplicates > 0:
-        print(f"  [INFO] Пропущено дубликатов (есть в другом кабинете): {skipped_duplicates}")
+    if merged_count > 0:
+        print(f"  [INFO] Объединено кабинетов (артикул в нескольких): {merged_count}")
 
     return added_count
 
