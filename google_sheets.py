@@ -229,16 +229,33 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
         sheet.append_rows(rows_to_add, value_input_option="USER_ENTERED")
         print(f"  [OK] Добавлено строк: {len(rows_to_add)}")
 
-        # Применяем цвета
+        # Применяем цвета пакетно через Sheets API
         all_values = sheet.get_all_values()
         start_row = len(all_values) - len(rows_to_add) + 1
 
+        color_requests = []
         for i, color in enumerate(row_colors):
-            row_num = start_row + i
             if color != COLOR_WHITE:
-                sheet.format(f"A{row_num}:H{row_num}", {"backgroundColor": color})
+                row_idx = start_row + i - 1  # 0-based для API
+                color_requests.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet.id,
+                            "startRowIndex": row_idx,
+                            "endRowIndex": row_idx + 1,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": 8
+                        },
+                        "cell": {
+                            "userEnteredFormat": {"backgroundColor": color}
+                        },
+                        "fields": "userEnteredFormat.backgroundColor"
+                    }
+                })
 
-        print(f"  [OK] Цвета применены")
+        if color_requests:
+            sheet.spreadsheet.batch_update({"requests": color_requests})
+            print(f"  [OK] Цвета применены ({len(color_requests)} строк)")
 
     if merged_count > 0:
         print(f"  [INFO] Объединено кабинетов (артикул в нескольких): {merged_count}")
@@ -248,7 +265,7 @@ def add_products_to_sheet(sheet, products, merchant_name="Sulpak"):
 
 def check_disappeared_products(sheet, current_skus, merchant_name="Sulpak"):
     """
-    Проверить исчезнувшие товары и поставить дату исчезновения
+    Проверить исчезнувшие товары и поставить дату исчезновения (пакетно)
     current_skus: set артикулов из текущего файла "Без привязки"
     merchant_name: проверяем только для конкретного кабинета
     """
@@ -256,9 +273,9 @@ def check_disappeared_products(sheet, current_skus, merchant_name="Sulpak"):
     current_skus_set = set(str(s) for s in current_skus)
 
     all_data = sheet.get_all_values()
-    updated_count = 0
+    updates = []
 
-    for i, row in enumerate(all_data[1:], start=2):  # start=2 потому что строка 1 = заголовок
+    for i, row in enumerate(all_data[1:], start=2):
         if len(row) < 7:
             continue
 
@@ -272,13 +289,37 @@ def check_disappeared_products(sheet, current_skus, merchant_name="Sulpak"):
 
         # Если артикул исчез и дата ещё не проставлена
         if sku not in current_skus_set and not date_disappeared:
-            sheet.update_cell(i, 7, today)  # Столбец G = 7
-            updated_count += 1
+            updates.append({"range": f"G{i}", "values": [[today]]})
 
-    if updated_count:
-        print(f"  [OK] Отмечено исчезнувших ({merchant_name}): {updated_count}")
+    if updates:
+        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        print(f"  [OK] Отмечено исчезнувших ({merchant_name}): {len(updates)}")
 
-    return updated_count
+    return len(updates)
+
+
+def check_previous_month(spreadsheet, current_skus, merchant_name="Sulpak"):
+    """
+    Проверить предыдущий месяц на незакрытые записи (без даты исчезновения).
+    Если товар исчез из текущего файла — проставить дату исчезновения.
+    """
+    from dateutil.relativedelta import relativedelta
+
+    prev_month = (datetime.now() - relativedelta(months=1)).strftime("%Y-%m")
+
+    try:
+        prev_sheet = spreadsheet.worksheet(prev_month)
+    except Exception:
+        print(f"    [INFO] Лист {prev_month} не найден, пропускаем")
+        return 0
+
+    updated = check_disappeared_products(prev_sheet, current_skus, merchant_name)
+
+    # Обновляем формулы столбца H в предыдущем месяце тоже
+    if updated > 0:
+        setup_days_column(prev_sheet)
+
+    return updated
 
 
 def setup_days_column(sheet):
@@ -476,12 +517,17 @@ def process_products_file(excel_path, merchant_name="Sulpak"):
     disappeared = check_disappeared_products(sheet, current_skus, merchant_name)
     print(f"    Исчезло: {disappeared}")
 
-    # Настраиваем столбец "Дней до решения" (только один раз за сессию)
-    print("[6] Настройка столбца 'Дней до решения'...")
+    # Проверяем исчезнувшие в предыдущем месяце (незакрытые записи)
+    print("[6] Проверка предыдущего месяца...")
+    prev_disappeared = check_previous_month(spreadsheet, current_skus, merchant_name)
+    print(f"    Исчезло (пред. месяц): {prev_disappeared}")
+
+    # Настраиваем столбец "Дней до решения"
+    print("[7] Настройка столбца 'Дней до решения'...")
     setup_days_column(sheet)
 
     print(f"\n[OK] Google Sheets обработан для {merchant_name}!")
-    return {"added": added, "disappeared": disappeared}
+    return {"added": added, "disappeared": disappeared + prev_disappeared}
 
 
 # Тест при прямом запуске

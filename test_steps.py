@@ -717,12 +717,16 @@ async def main():
     print("ОБРАБОТКА GOOGLE SHEETS")
     print("="*50)
 
-    for merchant in MERCHANTS:
+    for idx, merchant in enumerate(MERCHANTS):
         merchant_name = merchant["name"]
         files = all_files.get(merchant_name, {})
         bez_privyazki_file = files.get("без_привязки")
 
         if bez_privyazki_file and os.path.exists(bez_privyazki_file):
+            # Пауза между мерчантами (лимит Google API — 60 запросов/мин)
+            if idx > 0:
+                print("\n  [WAIT] Пауза 5 сек (лимит Google API)...")
+                await asyncio.sleep(5)
             try:
                 from google_sheets import process_products_file
                 print(f"\n[Google Sheets] Обработка {merchant_name}...")
