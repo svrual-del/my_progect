@@ -67,6 +67,9 @@ def load_all_data():
         data = rows[1:]
 
         df = pd.DataFrame(data, columns=headers)
+        # Унификация: "Ответственный" -> "Менеджер"
+        if "Ответственный" in df.columns and "Менеджер" not in df.columns:
+            df.rename(columns={"Ответственный": "Менеджер"}, inplace=True)
         df["Месяц"] = ws.title
         all_frames.append(df)
 
