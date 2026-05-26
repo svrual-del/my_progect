@@ -92,7 +92,11 @@ def get_or_create_month_sheet(spreadsheet, month_name=None):
 
 
 def get_existing_skus(sheet):
-    """Получить список уже добавленных артикулов со всех кабинетов"""
+    """
+    Получить список активных артикулов со всех кабинетов.
+    Активные = у которых пустой столбец G (Дата исчезновения).
+    Если товар исчез и вернулся — он считается новым (не активным).
+    """
     try:
         # Получаем все значения из столбцов A (кабинет) и B (артикулы)
         all_data = sheet.get_all_values()
@@ -102,7 +106,10 @@ def get_existing_skus(sheet):
             if len(row) >= 2:
                 merchant = row[0]  # Столбец A — Кабинет
                 sku = row[1]       # Столбец B — Артикул
-                skus.add((merchant, sku))
+                date_disappeared = row[6] if len(row) > 6 else ""
+                # Только активные записи (без даты исчезновения)
+                if not date_disappeared:
+                    skus.add((merchant, sku))
         return skus
     except Exception as e:
         print(f"  [WARN] Ошибка получения артикулов: {e}")
@@ -110,7 +117,11 @@ def get_existing_skus(sheet):
 
 
 def get_sku_rows(sheet):
-    """Получить словарь артикулов с номерами строк и кабинетами: {sku: {"row": N, "merchant": "Sulpak"}}"""
+    """
+    Получить словарь активных артикулов с номерами строк и кабинетами.
+    Учитываются только записи с пустым столбцом G (Дата исчезновения),
+    чтобы вернувшийся после исчезновения товар добавлялся заново.
+    """
     try:
         all_data = sheet.get_all_values()
         sku_map = {}
@@ -118,7 +129,10 @@ def get_sku_rows(sheet):
             if len(row) >= 2:
                 sku = row[1]       # Столбец B — Артикул
                 merchant = row[0]  # Столбец A — Кабинет
-                sku_map[sku] = {"row": i, "merchant": merchant}
+                date_disappeared = row[6] if len(row) > 6 else ""
+                # Только активные записи (без даты исчезновения)
+                if not date_disappeared:
+                    sku_map[sku] = {"row": i, "merchant": merchant}
         return sku_map
     except Exception as e:
         print(f"  [WARN] Ошибка получения артикулов: {e}")
