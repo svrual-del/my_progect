@@ -264,21 +264,42 @@ async def navigate_and_download(page, category_key, step_label="", merchant_name
         tab_text = TAB_LABELS.get(category_key, step_label)
         print(f"[2] Клик по вкладке '{tab_text}'...")
 
-        # Ищем вкладку по тексту (текст содержит число в скобках, напр. "Требуют доработок (2)")
-        tab = await page.query_selector(f'a:has-text("{tab_text}"):visible')
-        if tab:
-            # Проверяем количество товаров в скобках
-            tab_full_text = await tab.inner_text()
-            print(f"    Вкладка: '{tab_full_text.strip()}'")
+        # Ждём networkidle перед чтением счётчика вкладок
+        # (Каспи рендерит вкладку с "(0)" до подгрузки реальных данных)
+        try:
+            await page.wait_for_load_state('networkidle', timeout=15000)
+        except Exception:
+            pass
 
-            # Извлекаем число из скобок, напр. "Без привязки (0)" -> 0
-            import re
-            count_match = re.search(r'\((\d+)\)', tab_full_text)
-            if count_match:
-                count = int(count_match.group(1))
-                if count == 0:
-                    print(f"    [SKIP] Товаров 0 — пропускаем скачивание")
-                    return None
+        # Ищем вкладку по тексту (текст содержит число в скобках, напр. "Требуют доработок (2)")
+        import re
+        tab = await page.query_selector(f'a:has-text("{tab_text}"):visible')
+
+        if tab:
+            # Читаем счётчик; если "(0)" — ждём и перечитываем (lazy-loading)
+            async def read_count():
+                t = await tab.inner_text()
+                m = re.search(r'\((\d+)\)', t)
+                return (int(m.group(1)) if m else None), t.strip()
+
+            count, tab_full_text = await read_count()
+            print(f"    Вкладка: '{tab_full_text}' (count={count})")
+
+            # Если счётчик пустой или 0 — это может быть незагруженная вкладка.
+            # Делаем до 3 повторных проверок с паузой, прежде чем поверить в "0"
+            if count == 0 or count is None:
+                for attempt in range(3):
+                    await asyncio.sleep(3)
+                    new_count, tab_full_text = await read_count()
+                    print(f"    Перечитываем счётчик (попытка {attempt + 1}): '{tab_full_text}' (count={new_count})")
+                    if new_count is not None and new_count > 0:
+                        count = new_count
+                        break
+                    count = new_count if new_count is not None else count
+
+            if count == 0:
+                print(f"    [SKIP] Товаров 0 — пропускаем скачивание")
+                return None
 
             await tab.click()
             await asyncio.sleep(5)
