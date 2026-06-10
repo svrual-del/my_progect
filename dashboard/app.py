@@ -54,6 +54,7 @@ def load_all_data():
 
     all_frames = []
     month_pattern = re.compile(r"^\d{4}-\d{2}$")
+    duplicate_warnings = []
 
     for ws in spreadsheet.worksheets():
         if not month_pattern.match(ws.title):
@@ -63,15 +64,41 @@ def load_all_data():
         if len(rows) < 2:
             continue
 
-        headers = rows[0]
+        raw_headers = [h.strip() for h in rows[0]]
         data = rows[1:]
 
+        # Если в листе одновременно есть и "Менеджер", и "Ответственный" —
+        # оставляем "Менеджер", "Ответственный" гасим (станет col_N ниже).
+        if "Ответственный" in raw_headers and "Менеджер" in raw_headers:
+            raw_headers[raw_headers.index("Ответственный")] = ""
+
+        # Делаем заголовки уникальными: пустые -> col_N, дубли -> name_2, name_3...
+        seen = {}
+        headers = []
+        sheet_dups = []
+        for i, h in enumerate(raw_headers):
+            base = h if h else f"col_{i}"
+            if base in seen:
+                seen[base] += 1
+                headers.append(f"{base}_{seen[base]}")
+                if h:
+                    sheet_dups.append(h)
+            else:
+                seen[base] = 1
+                headers.append(base)
+
+        if sheet_dups:
+            duplicate_warnings.append((ws.title, sheet_dups))
+
         df = pd.DataFrame(data, columns=headers)
-        # Унификация: "Ответственный" -> "Менеджер"
+        # Унификация: единичный "Ответственный" -> "Менеджер"
         if "Ответственный" in df.columns and "Менеджер" not in df.columns:
             df.rename(columns={"Ответственный": "Менеджер"}, inplace=True)
         df["Месяц"] = ws.title
         all_frames.append(df)
+
+    # Сохраняем предупреждения в session_state, чтобы показать после загрузки
+    st.session_state["_header_warnings"] = duplicate_warnings
 
     if not all_frames:
         return pd.DataFrame()
@@ -116,8 +143,16 @@ def load_all_data():
 try:
     df = load_all_data()
 except Exception as e:
-    st.error(f"Ошибка подключения к Google Sheets: {e}")
+    st.error(f"Ошибка загрузки данных: {e}")
     st.stop()
+
+# Показываем предупреждения о дубликатах заголовков (если есть)
+for sheet_title, dups in st.session_state.get("_header_warnings", []):
+    st.warning(
+        f"Лист **{sheet_title}**: в строке заголовков обнаружены дубликаты {dups}. "
+        f"Колонки автоматически переименованы (suffix _2, _3...). "
+        f"Проверь шапку листа в Google Sheets."
+    )
 
 if df.empty:
     st.warning("Нет данных в таблице. Убедитесь, что есть месячные листы (формат: 2026-03).")
