@@ -18,20 +18,25 @@ SPREADSHEET_ID = "16NoTXUjutOw_anh_oSuufYEEfEu6FiHGm9OFnrSkdN8"
 MANAGERS_FILE = os.path.join(os.path.dirname(__file__), "managers.txt")
 
 def load_managers():
-    """Загрузка списка менеджеров из файла managers.txt"""
-    if os.path.exists(MANAGERS_FILE):
-        with open(MANAGERS_FILE, "r", encoding="utf-8") as f:
-            managers = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-        if managers:
-            return managers
-    # Список по умолчанию, если файл не найден
-    return [
-        "Дементьева Алина Владимировна",
-        "Кононенко Михаил Валерьевич",
-        "Величковская Алиса Леонидовна",
-        "Асреп Жулдыз Ерланкызы",
-        "Тохсеитова Диана Жорабековна",
-    ]
+    """Загрузка списка менеджеров из файла managers.txt.
+
+    Падает с понятной ошибкой, если файла нет или в нём не осталось
+    активных строк — иначе исключённые менеджеры тихо вернулись бы
+    в распределение через какой-нибудь жёстко прописанный fallback.
+    """
+    if not os.path.exists(MANAGERS_FILE):
+        raise RuntimeError(
+            f"Файл {MANAGERS_FILE} не найден. "
+            "Создайте его с одним ФИО на строку (# — комментарий)."
+        )
+    with open(MANAGERS_FILE, "r", encoding="utf-8") as f:
+        managers = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    if not managers:
+        raise RuntimeError(
+            f"В {MANAGERS_FILE} нет активных менеджеров (все строки закомментированы или файл пуст). "
+            "Раскомментируйте хотя бы одного — иначе распределение задач не сможет работать."
+        )
+    return managers
 
 MANAGERS = load_managers()
 
