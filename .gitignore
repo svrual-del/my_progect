@@ -3,3 +3,6 @@ reports/
 __pycache__/
 *.pyc
 .env
+monitor_state.json
+google-credentials.json
+*.log

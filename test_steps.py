@@ -26,6 +26,31 @@ from config import (
 os.makedirs(DOWNLOADS_PATH, exist_ok=True)
 
 
+async def pick_clickable(page, selector):
+    """Из всех элементов по селектору выбираем реально кликабельный.
+
+    На странице логина в DOM ДВЕ панели (Телефон и Email) с одинаковыми
+    полями и кнопками — первая перекрыта контейнером div.columns, клик
+    по ней виснет. Проверяем через elementFromPoint, что в центре элемента
+    находится он сам (а не перекрывающий его контейнер).
+    """
+    for elem in await page.query_selector_all(selector):
+        try:
+            box = await elem.bounding_box()
+            if not box or box['width'] == 0 or box['height'] == 0:
+                continue
+            clickable = await elem.evaluate("""el => {
+                const r = el.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+                return hit === el || el.contains(hit);
+            }""")
+            if clickable:
+                return elem
+        except Exception:
+            continue
+    return None
+
+
 async def test_step1_login():
     """ЭТАП 1: Авторизация"""
     print("\n" + "="*50)
@@ -52,8 +77,9 @@ async def test_step1_login():
             await asyncio.sleep(1)
             print("[2] Выбрана вкладка Email")
 
-        # Ввод email
-        login_input = await page.query_selector('#user_email_field, input[name="username"], input[placeholder="Email"], input.text-field')
+        # Ввод email (берём кликабельное поле — скрытая панель "Телефон" перекрыта)
+        # id user_email_field стоит и на DIV-обёртке, и на input — берём только input
+        login_input = await pick_clickable(page, 'input#user_email_field, input[name="username"], input[placeholder="Email"], input.text-field')
         if login_input:
             await login_input.fill(KASPI_LOGIN)
             print(f"[3] Email введён: {KASPI_LOGIN}")
@@ -62,20 +88,26 @@ async def test_step1_login():
             await browser.close()
             return None, None, None
 
-        # Кнопка "Продолжить"
-        continue_btn = await page.query_selector('button:has-text("Продолжить"), button:has-text("Continue"), button[type="submit"]')
+        # Кнопка "Продолжить" (в DOM их две — берём реально кликабельную)
+        continue_btn = await pick_clickable(
+            page,
+            'button:has-text("Продолжить"), button:has-text("Continue"), button[type="submit"]'
+        )
         if continue_btn:
             await continue_btn.click()
             print("[4] Нажата кнопка 'Продолжить'")
         await asyncio.sleep(3)
 
         # Ввод пароля
-        password_input = await page.query_selector('input[type="password"], input[name="password"]')
+        password_input = await pick_clickable(page, 'input[type="password"], input[name="password"]')
         if password_input:
             await password_input.fill(KASPI_PASSWORD)
             print("[5] Пароль введён")
 
-            login_btn = await page.query_selector('button:has-text("Войти"), button:has-text("Продолжить"), button[type="submit"]')
+            login_btn = await pick_clickable(
+                page,
+                'button:has-text("Войти"), button:has-text("Продолжить"), button[type="submit"]'
+            )
             if login_btn:
                 await login_btn.click()
                 print("[6] Нажата кнопка входа")
@@ -96,7 +128,9 @@ async def test_step1_login():
             return None, None, None
 
     except Exception as e:
-        print(f"\n[FAIL] ОШИБКА: {e}")
+        # cp1251-консоль не переваривает спецсимволы из ошибок Playwright
+        err_msg = str(e).encode('ascii', errors='replace').decode('ascii')
+        print(f"\n[FAIL] ОШИБКА: {err_msg}")
         await browser.close()
         return None, None, None
 

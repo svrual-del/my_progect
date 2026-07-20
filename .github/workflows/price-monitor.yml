@@ -1,0 +1,66 @@
+name: Kaspi Price Monitor
+
+on:
+  # Каждые 30 минут (GitHub может задерживать запуск на 5-15 мин при нагрузке)
+  schedule:
+    - cron: '*/30 * * * *'
+  # Ручной запуск из интерфейса GitHub
+  workflow_dispatch:
+
+# Не запускаем два мониторинга одновременно
+concurrency:
+  group: price-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps
+
+      # Состояние (дата последней строки с алертом) между запусками —
+      # чтобы не слать повторный алерт по одной и той же строке
+      - name: Restore monitor state
+        uses: actions/cache/restore@v4
+        with:
+          path: monitor_state.json
+          key: price-monitor-state-${{ github.run_id }}
+          restore-keys: |
+            price-monitor-state-
+
+      - name: Run Price Monitor
+        env:
+          CI: 'true'
+          KASPI_LOGIN: ${{ secrets.KASPI_LOGIN }}
+          KASPI_PASSWORD: ${{ secrets.KASPI_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python price_monitor.py
+
+      - name: Save monitor state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: monitor_state.json
+          key: price-monitor-state-${{ github.run_id }}
+
+      # Скриншот и HTML страницы, если парсинг не удался
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_id }}
+          path: downloads/history_debug.*
+          if-no-files-found: ignore
